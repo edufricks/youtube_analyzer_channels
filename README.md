@@ -1,27 +1,17 @@
-# 📊 YouTube Viral Analyzer
+# 📊 YouTube Viral Videos Monitor
 
-Aplicação em **Streamlit** para analisar a viralidade de vídeos em um canal do YouTube.  
-Permite filtrar **Shorts**, **Vídeos longos** ou analisar **todos os vídeos**.
+Aplicação em **Streamlit** para analisar os vídeos mais virais de um canal do YouTube, com suporte a:
+- **Todos os vídeos**
+- **Apenas Shorts**
+- **Apenas Longos**
 
----
-
-## 🚀 Funcionalidades
-- Inserir sua própria **YouTube Data API Key**
-- Escolher o **canal do YouTube** por ID
-- Selecionar se deseja analisar:
-  - 🔎 Todos os vídeos
-  - 📱 Apenas Shorts
-  - 🎬 Apenas vídeos longos
-- Ranking de viralidade (views + likes * 3 + comentários * 5)
-- Tabela com resultados
-- Exportar resultados em **CSV** com links clicáveis
-- Destaque do **TOP 5 mais virais**
+Os vídeos são ordenados automaticamente pelo número de **views** (viralidade).
 
 ---
 
-## 📌 Como rodar localmente
+## 🚀 Como usar
 
-1. Clone este repositório ou copie os arquivos.
-2. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
+### 1. Clonar ou baixar este repositório
+```bash
+git clone https://github.com/seu-repositorio/youtube-viral-monitor.git
+cd youtube-viral-monitor
