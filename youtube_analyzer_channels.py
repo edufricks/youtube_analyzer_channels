@@ -1,137 +1,121 @@
 import streamlit as st
-import requests
 import pandas as pd
-from datetime import datetime
+import requests
 
-# -------------------------------
-# Função para coletar os vídeos
-# -------------------------------
-def coletar_videos(api_key, channel_id, tipo="all", max_results=100):
+# ===============================
+# Função para normalizar o canal
+# ===============================
+def obter_channel_id(api_key, entrada):
     url_base = "https://www.googleapis.com/youtube/v3/"
-    
-    # 1) Obter o Uploads Playlist ID do canal
-    channel_url = f"{url_base}channels?part=contentDetails&id={channel_id}&key={api_key}"
-    r = requests.get(channel_url).json()
-    
-    if "items" not in r or len(r["items"]) == 0:
+
+    # Se já for um channelId válido (começa com UC)
+    if entrada.startswith("UC"):
+        return entrada
+
+    # Se for username estilo @manualjr
+    if entrada.startswith("@"):
+        username = entrada[1:]
+        url = f"{url_base}search?part=snippet&type=channel&q={username}&key={api_key}"
+        r = requests.get(url).json()
+        if "items" in r and len(r["items"]) > 0:
+            return r["items"][0]["snippet"]["channelId"]
+
+    # Se for URL de canal
+    if "youtube.com" in entrada:
+        if "/channel/" in entrada:  # URL com channelId
+            return entrada.split("/channel/")[-1].split("/")[0]
+        if "/@" in entrada:  # URL com @username
+            username = entrada.split("/@")[-1].split("/")[0]
+            url = f"{url_base}search?part=snippet&type=channel&q={username}&key={api_key}"
+            r = requests.get(url).json()
+            if "items" in r and len(r["items"]) > 0:
+                return r["items"][0]["snippet"]["channelId"]
+
+    return None
+
+# ===============================
+# Função para coletar vídeos
+# ===============================
+def coletar_videos(api_key, channel_input, tipo="all"):
+    channel_id = obter_channel_id(api_key, channel_input)
+    if not channel_id:
         return pd.DataFrame(), "Canal não encontrado ou inválido."
-    
-    uploads_playlist = r["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
-    
-    # 2) Coletar vídeos do canal via playlist
+
+    url_base = "https://www.googleapis.com/youtube/v3/"
     videos = []
-    next_page = None
-    total_coletado = 0
-    
+    page_token = None
+
     while True:
-        playlist_url = f"{url_base}playlistItems?part=contentDetails&playlistId={uploads_playlist}&maxResults=50&key={api_key}"
-        if next_page:
-            playlist_url += f"&pageToken={next_page}"
-        
-        playlist_data = requests.get(playlist_url).json()
-        
-        for item in playlist_data.get("items", []):
-            videos.append(item["contentDetails"]["videoId"])
-            total_coletado += 1
-            if total_coletado >= max_results:
-                break
-        
-        if "nextPageToken" in playlist_data and total_coletado < max_results:
-            next_page = playlist_data["nextPageToken"]
-        else:
+        url = f"{url_base}search?part=snippet&channelId={channel_id}&maxResults=50&order=date&type=video&key={api_key}"
+        if page_token:
+            url += f"&pageToken={page_token}"
+
+        r = requests.get(url).json()
+        if "items" not in r:
             break
-    
-    # 3) Buscar estatísticas dos vídeos
-    video_chunks = [videos[i:i+50] for i in range(0, len(videos), 50)]
-    dados = []
-    
-    for chunk in video_chunks:
-        stats_url = f"{url_base}videos?part=snippet,statistics,contentDetails&id={','.join(chunk)}&key={api_key}"
-        stats_data = requests.get(stats_url).json()
-        
-        for v in stats_data.get("items", []):
-            duracao = v["contentDetails"]["duration"]
-            title = v["snippet"]["title"]
-            video_id = v["id"]
-            link = f"https://www.youtube.com/watch?v={video_id}"
-            
-            # Definir tipo (short vs longo)
-            segundos = iso8601_para_segundos(duracao)
-            is_short = segundos <= 60
-            
+
+        for item in r["items"]:
+            video_id = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            published = item["snippet"]["publishedAt"]
+
+            # detalhes do vídeo
+            url_stats = f"{url_base}videos?part=statistics,contentDetails&id={video_id}&key={api_key}"
+            stats = requests.get(url_stats).json()
+
+            if "items" not in stats or not stats["items"]:
+                continue
+
+            stats_item = stats["items"][0]
+            duration = stats_item["contentDetails"]["duration"]
+            views = int(stats_item["statistics"].get("viewCount", 0))
+
+            # Filtrar shorts (menos de 60s) ou longos
+            is_short = "PT" in duration and "M" not in duration and "H" not in duration
             if tipo == "shorts" and not is_short:
                 continue
-            if tipo == "videos" and is_short:
+            if tipo == "longos" and is_short:
                 continue
-            
-            views = int(v["statistics"].get("viewCount", 0))
-            likes = int(v["statistics"].get("likeCount", 0)) if "likeCount" in v["statistics"] else 0
-            comments = int(v["statistics"].get("commentCount", 0)) if "commentCount" in v["statistics"] else 0
-            
-            dados.append({
+
+            videos.append({
                 "Título": title,
-                "Link": link,
+                "Publicado em": published,
                 "Views": views,
-                "Likes": likes,
-                "Comentários": comments,
-                "Duração (s)": segundos,
-                "Publicado em": v["snippet"]["publishedAt"]
+                "Link": f"https://youtu.be/{video_id}"
             })
-    
-    df = pd.DataFrame(dados)
-    
-    if df.empty:
-        return df, "Nenhum vídeo encontrado com os filtros selecionados."
-    
-    # 4) Ordenar por viralidade (views + likes*3 + comments*5)
-    df["Score Viralidade"] = df["Views"] + df["Likes"] * 3 + df["Comentários"] * 5
-    df = df.sort_values(by="Score Viralidade", ascending=False).reset_index(drop=True)
-    
+
+        page_token = r.get("nextPageToken")
+        if not page_token:
+            break
+
+    df = pd.DataFrame(videos)
+    if not df.empty:
+        df = df.sort_values(by="Views", ascending=False).reset_index(drop=True)
+
     return df, None
 
-
-# -------------------------------
-# Função auxiliar para converter ISO8601 → segundos
-# -------------------------------
-import isodate
-def iso8601_para_segundos(duration):
-    try:
-        return int(isodate.parse_duration(duration).total_seconds())
-    except:
-        return 0
-
-
-# -------------------------------
+# ===============================
 # Interface Streamlit
-# -------------------------------
-st.title("📊 YouTube Viral Analyzer")
-st.write("Analise os vídeos mais virais de um canal do YouTube (incluindo Shorts e Longos).")
+# ===============================
+st.title("📊 YouTube Viral Videos Monitor")
+st.write("Analise os vídeos mais virais de um canal do YouTube. Informe o canal e sua chave da API.")
 
-api_key = st.text_input("🔑 Sua API Key do YouTube Data API v3")
-channel_id = st.text_input("📺 ID do Canal (ex: UC-lHJZR3Gqxm24_Vd_AJ5Yw)")
+api_key = st.text_input("🔑 Insira sua API Key do YouTube Data API v3", type="password")
+channel_input = st.text_input("📺 Digite o canal (ID, @username ou URL):")
+tipo = st.selectbox("Tipo de pesquisa:", ["all", "shorts", "longos"])
 
-tipo = st.radio("🎯 Tipo de pesquisa", ["all", "shorts", "videos"], format_func=lambda x: "Todos" if x=="all" else "Só Shorts" if x=="shorts" else "Só Vídeos longos")
-limite = st.number_input("📌 Quantidade de vídeos a analisar", min_value=10, max_value=500, value=100, step=10)
-
-if st.button("🚀 Analisar"):
-    if not api_key or not channel_id:
-        st.error("Preencha a API Key e o ID do canal antes de continuar.")
+if st.button("Analisar canal"):
+    if not api_key or not channel_input:
+        st.error("Preencha todos os campos.")
     else:
-        df, erro = coletar_videos(api_key, channel_id, tipo, limite)
-        
-        if erro:
-            st.error(erro)
-        else:
-            st.success(f"✅ Foram analisados {len(df)} vídeos do canal.")
-            
-            # Mostrar TOP 5
-            st.subheader("🏆 TOP 5 mais virais")
-            st.dataframe(df.head(5)[["Título", "Link", "Views", "Likes", "Comentários", "Score Viralidade"]])
-            
-            # Mostrar tabela completa
-            st.subheader("📋 Resultados completos")
-            st.dataframe(df)
-            
-            # Exportar CSV
-            csv = df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button("📥 Baixar CSV completo", csv, "resultados_youtube.csv", "text/csv", key="download_csv")
+        with st.spinner("Coletando vídeos... isso pode levar alguns minutos..."):
+            df, erro = coletar_videos(api_key, channel_input, tipo)
+            if erro:
+                st.error(erro)
+            elif df.empty:
+                st.warning("Nenhum vídeo encontrado.")
+            else:
+                st.success(f"✅ {len(df)} vídeos analisados!")
+                st.dataframe(df.head(10))  # mostra os 10 mais virais
+                csv = df.to_csv(index=False)
+                st.download_button("📥 Baixar CSV completo", csv, "youtube_videos.csv", "text/csv")
